@@ -21,32 +21,33 @@ st.title("Stock Analysis Dashboard")
 st.sidebar.header("Settings")
 
 ticker = st.sidebar.text_input("Stock Ticker", value="AAPL").upper().strip()
+default_start = date.today() - timedelta(days=365)
+start_date = st.sidebar.date_input("Start Date", value=default_start)
+end_date = st.sidebar.date_input("End Date", value=date.today())
+
+if start_date >= end_date:
+    st.sidebar.error("Start date must be before end date.")
+    st.stop()
+ma_window = st.sidebar.slider(
+    "Moving Average Window (days)", min_value=5, max_value=200, value=50, step=5
+)
 
 # -- Data download ----------------------------------------
 # We wrap the download in st.cache_data so repeated runs with
 # the same inputs don't re-download every time. The ttl (time-to-live)
 # ensures the cache expires after one hour so data stays fresh.
 @st.cache_data(show_spinner="Fetching data...", ttl=3600)
-def load_data(ticker: str) -> pd.DataFrame:
-    """Download the most recent year of daily data from Yahoo Finance."""
-    end = date.today()
-    start = end - timedelta(days=365)
+def load_data(ticker: str, start: date, end: date) -> pd.DataFrame:
+    """Download daily data from Yahoo Finance for a given date range."""
     df = yf.download(ticker, start=start, end=end, progress=False)
     return df
 
 # -- Main logic -------------------------------------------
 if ticker:
     try:
-        df = load_data(ticker)
+        df = load_data(ticker, start_date, end_date)
     except Exception as e:
         st.error(f"Failed to download data: {e}")
-        st.stop()
-
-    if df.empty:
-        st.error(
-            f"No data found for **{ticker}**. "
-            "Check the ticker symbol and try again."
-        )
         st.stop()
 
     # Flatten any multi-level columns that yfinance sometimes returns
@@ -55,6 +56,13 @@ if ticker:
 
     # -- Compute a derived column -------------------------
     df["Daily Return"] = df["Close"].pct_change()
+    df[f"{ma_window}-Day MA"] = df["Close"].rolling(window=ma_window).mean()
+    if ma_window > len(df):
+        st.warning(
+            f"The selected {ma_window}-day window is longer than the "
+            f"available data ({len(df)} trading days). The moving average "
+            "line won't appear — try a shorter window or a wider date range."
+        )
 
     # -- Key metrics --------------------------------------
     latest_close = float(df["Close"].iloc[-1])
@@ -64,7 +72,7 @@ if ticker:
     max_close = float(df["Close"].max())
     min_close = float(df["Close"].min())
 
-    st.subheader(f"{ticker} — Key Metrics (Past 12 Months)")
+    st.subheader(f"{ticker} — Key Metrics")
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Latest Close", f"${latest_close:,.2f}")
@@ -72,13 +80,12 @@ if ticker:
     col3.metric("Annualized Volatility (sigma)", f"{ann_volatility:.2%}")
 
     col4, col5, _ = st.columns(3)
-    col4.metric("12-Month High", f"${max_close:,.2f}")
-    col5.metric("12-Month Low", f"${min_close:,.2f}")
-
+    col4.metric("Period High", f"${max_close:,.2f}")
+    col5.metric("Period Low", f"${min_close:,.2f}")
     st.divider()
 
     # -- Price chart --------------------------------------
-    st.subheader("Closing Price — Past 12 Months")
+    st.subheader("Price & Moving Average")
 
     fig = go.Figure()
     fig.add_trace(
@@ -86,6 +93,13 @@ if ticker:
             x=df.index, y=df["Close"],
             mode="lines", name="Close Price",
             line=dict(width=1.5)
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index, y=df[f"{ma_window}-Day MA"],
+            mode="lines", name=f"{ma_window}-Day MA",
+            line=dict(width=2, dash="dash")
         )
     )
     fig.update_layout(
